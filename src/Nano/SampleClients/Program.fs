@@ -8,6 +8,9 @@ open System.Net.Sockets
 open System.Diagnostics
 open Prajna.Nano
 
+open Prajna.Tools
+
+
 let hello() =
     use client = new ClientNode(ServerNode.GetDefaultIP(), 1500)
     client.AsyncNewRemote(fun _ -> printfn "Hello") |> Async.RunSynchronously |> ignore
@@ -99,7 +102,9 @@ let broadcastCluster() =
     let arrs = broadcaster.BroadcastChained(fun _ -> printfn "Received longs"; longs) |> Async.RunSynchronously
     time (sprintf "Broadcast %2.2fMB" mbs)
 
-let latency() =
+let latency (argv: string[]) =
+
+    let numTrips = Int32.Parse(argv.[0])
 
     printfn "Starting"
     let client = new ClientNode( getOneNetClusterIPs [21] |> Seq.nth 0, 1500 )
@@ -109,17 +114,86 @@ let latency() =
     do r.AsyncGetValue() |> Async.RunSynchronously |> ignore
     time "First get"
 
-    let numTrips = 200
     resetTiming()
-    let vals = Array.init numTrips (fun _ -> r.AsyncGetValue() |> Async.RunSynchronously)
-    time (sprintf "%d round trips" numTrips)
 
+    let sw = Stopwatch.StartNew()
+    let vals = Array.init numTrips (fun _ -> r.AsyncGetValue() |> Async.RunSynchronously)
+    let elapsed = sw.Elapsed
+    printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
+
+let inline receiveAll (socket: Socket) (bytes: byte[]) (offset: int) (count: int) =
+    let mutable cur = 0
+    while cur < count do
+        cur <- cur + socket.Receive(bytes, offset + cur, count - cur, SocketFlags.None)
+
+let inline sendAll (socket: Socket) (bytes: byte[]) (offset: int) (count: int) =
+    let mutable cur = 0
+    while cur < count do
+        cur <- cur + socket.Send(bytes, offset + cur, count - cur, SocketFlags.None)
+
+let roundTrip (socket: Socket) (bytes: byte[]) (count: int) =
+    sendAll socket bytes 0 count
+    receiveAll socket bytes 0 count
+
+let roundTrip2Calls (socket: Socket) (bytes: byte[]) (count: int) =
+    socket.Send(bytes, 0, 4, SocketFlags.None) |> ignore
+    socket.Send(bytes, 4, count - 4, SocketFlags.None) |> ignore
+    socket.Receive(bytes, 0, 4, SocketFlags.None) |> ignore
+    let retCount = BitConverter.ToInt32(bytes, 0)
+//    printfn "retCount = %d" retCount
+    socket.Receive(bytes, 4, retCount, SocketFlags.None) |> ignore
+
+let rawLatency (args: string[]) =
+    printfn "Starting"
+    let machine = Int32.Parse(args.[0])
+    let port = Int32.Parse(args.[1])
+    let numTrips = Int32.Parse(args.[2])
+    let count = Int32.Parse(args.[3])
+    let client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+    client.NoDelay <- true
+    client.Connect(getOneNetClusterIPs [machine] |> Seq.nth 0, port)
+    printfn "Connected"
+    let bytes = 
+        let r = new Random()
+        Array.init<byte> 10000000 (fun _ -> r.Next(256) |> byte)
+    Array.Copy(BitConverter.GetBytes(count), bytes, 4)
+    let sw = Stopwatch.StartNew()
+    roundTrip client bytes count
+    printfn "First round trip: %A" sw.Elapsed
+    sw.Restart()
+    for i = 1 to numTrips do
+        roundTrip2Calls client bytes count
+    let elapsed = sw.Elapsed
+    printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
+
+let rawLatencyUdp (args: string[]) =
+    printfn "Starting"
+    let machine = Int32.Parse(args.[0])
+    let port = Int32.Parse(args.[1])
+    let numTrips = Int32.Parse(args.[2])
+    let client = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
+    client.Bind(IPEndPoint(IPAddress.Any, 1500))
+    let mutable remote = IPEndPoint(getOneNetClusterIPs [machine] |> Seq.nth 0, 1500) :> EndPoint
+    printfn "Bound"
+    let bytes = Array.zeroCreate 1
+    let sw = Stopwatch.StartNew()
+    client.SendTo(bytes, 0, 1, SocketFlags.None, remote) |> ignore
+    client.ReceiveFrom(bytes, 1, SocketFlags.None, &remote) |> ignore
+    printfn "First round trip: %A" sw.Elapsed
+    sw.Restart()
+    for i = 1 to numTrips do            
+        client.SendTo(bytes, 0, 1, SocketFlags.None, remote) |> ignore
+        client.ReceiveFrom(bytes, 1, SocketFlags.None, &remote) |> ignore
+    let elapsed = sw.Elapsed
+    printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
 
 [<EntryPoint>]
 let main argv = 
 
-    do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
+    // do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
 
-    broadcastCluster()
+    //rawLatency argv
+
+    latency argv
 
     0 // return an integer exit code

@@ -84,7 +84,8 @@
     </PostBuildEvent>
   </PropertyGroup>
   <PropertyGroup>
-    <PostBuildEvent>REM xcopy /y $(ProjectDir)$(OutDir)*.* \\OneNet20\c$\Nano</PostBuildEvent>
+    <PostBuildEvent>xcopy /y $(ProjectDir)$(OutDir)*.* \\OneNet20\c$\Nano
+xcopy /y $(ProjectDir)$(OutDir)*.* \\OneNet21\c$\Nano</PostBuildEvent>
   </PropertyGroup>
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.

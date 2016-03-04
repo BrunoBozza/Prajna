@@ -87,8 +87,10 @@
     </ProjectReference>
   </ItemGroup>
   <PropertyGroup>
-    <PostBuildEvent>REM xcopy /y $(TargetDir)SampleClients.* \\OneNet20\c$\Nano
+    <PostBuildEvent>xcopy /y $(TargetDir)SampleClients.* \\OneNet20\c$\Nano
 
+
+xcopy /y $(TargetDir)SampleClients.* \\OneNet21\c$\Nano
 </PostBuildEvent>
   </PropertyGroup>
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 

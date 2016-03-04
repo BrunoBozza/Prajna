@@ -176,20 +176,9 @@ module internal Serialize =
             assert(false)
             Unchecked.defaultof<'T>
 
-    let memo (f: 'a -> 'b) =
-        let cache = Dictionary<'a, 'b>()
-        fun x -> 
-            match cache.TryGetValue(x) with
-                | true, y -> y
-                | _ ->
-                    lock cache (fun _ -> 
-                        match cache.TryGetValue(x) with
-                        | true, y -> y
-                        | _ ->
-                            let y = f x
-                            cache.[x] <- y
-                            y
-                    )
+    let concurrentMemo (f: 'a -> 'b) =
+        let cache = System.Collections.Concurrent.ConcurrentDictionary<'a, 'b>()
+        fun x -> cache.GetOrAdd(x, f)
 
     let AllInstance = BindingFlags.Instance ||| BindingFlags.FlattenHierarchy ||| BindingFlags.Public ||| BindingFlags.NonPublic
 
@@ -269,8 +258,6 @@ type internal SerTypeInfo(objType: Type) =
         | Some func -> func obj sc
         | _ -> ()
 
-    member val SerializedPosition = -1 with get, set
-    
     member inline this.Type = objType
 
     member inline this.IsPrimitive = objType.IsPrimitive
@@ -300,7 +287,7 @@ type internal SerTypeInfo(objType: Type) =
     // below avoid a second one (except for the first time a type is used as an array element in 
     // the current call to Serialize)
     static member val private GetSize : Type -> int = 
-        Serialize.memo (fun t -> 
+        Serialize.concurrentMemo (fun t -> 
             typeof<SerTypeInfo>
                 .GetMethod("SizeOf", BindingFlags.Static ||| BindingFlags.NonPublic)
                 .GetGenericMethodDefinition()
@@ -316,22 +303,21 @@ type internal SerTypeInfo(objType: Type) =
 
 type internal TypeSerializer() =
 
-    let mutable serializedCount = 0
-    
     let deserializedTypes = List<SerTypeInfo>()
 
-    member val GetSerTypeInfo = Serialize.memo (fun t -> SerTypeInfo t)
+    let serializedPosition = Dictionary<Type, int>()
+
+    static member val GetSerTypeInfo = Serialize.concurrentMemo (fun t -> SerTypeInfo t)
 
     member this.Serialize (objType: SerTypeInfo, stream: BinaryWriter) = 
-        match objType.SerializedPosition with
-        | -1 ->
+        match serializedPosition.TryGetValue(objType.Type) with
+        | false, _ ->
             stream.Write(byte ReferenceType.InlineType)
             stream.Write objType.Type.AssemblyQualifiedName
-            objType.SerializedPosition <- serializedCount
-            serializedCount <- serializedCount + 1
-        | position ->
+            serializedPosition.[objType.Type] <- serializedPosition.Count
+        | true, position ->
             stream.Write(byte ReferenceType.TypePosition)
-            stream.Write objType.SerializedPosition
+            stream.Write position
 
     member this.Deserialize (reader: BinaryReader) : SerTypeInfo =
         let typeTag = LanguagePrimitives.EnumOfValue<byte, ReferenceType>(reader.ReadByte()) 
@@ -341,7 +327,7 @@ type internal TypeSerializer() =
             let newType = Type.GetType(newTypeName)
             if newType = null then
                 failwith <| sprintf "Could not load type %A." newTypeName
-            let newSerType = this.GetSerTypeInfo newType
+            let newSerType = TypeSerializer.GetSerTypeInfo newType
             deserializedTypes.Add newSerType
             newSerType
         | ReferenceType.TypePosition -> 
@@ -409,7 +395,7 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
         let writeOtherValueTypeArray(elType: Type, lowerBounds: int[], lengths: int[], arrObj: Array) = 
             let inc = Serialize.incrementIndex lowerBounds lengths
             let indices = Array.copy lowerBounds
-            let elTypeInfo = typeSerializer.GetSerTypeInfo elType
+            let elTypeInfo = TypeSerializer.GetSerTypeInfo elType
             if lengths |> Array.forall (fun dimLen -> dimLen > 0) then
                 self.WriteContents(elTypeInfo, arrObj.GetValue(indices))
                 while not <| inc indices do
@@ -434,7 +420,7 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
             while not <| inc indices do
                 self.WriteObject (arrObj.GetValue(indices))
 
-    let intArrayTypeInfo = typeSerializer.GetSerTypeInfo(typeof<int[]>)
+    let intArrayTypeInfo = TypeSerializer.GetSerTypeInfo(typeof<int[]>)
     let zeroLowerBound : int[] = Array.zeroCreate 1
 
     member private this.WriteArray (arrayTypeInfo: SerTypeInfo, arrObj: Array) =
@@ -473,7 +459,7 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
             if fieldType.IsPrimitive then
                 writePrimitive fieldValue
             elif fieldType.IsValueType then
-                this.WriteContents(typeSerializer.GetSerTypeInfo fieldType, fieldValue)
+                this.WriteContents(TypeSerializer.GetSerTypeInfo fieldType, fieldValue)
             else
                 this.WriteObject fieldValue
 
@@ -495,7 +481,7 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
         surrogate.GetObjectData(obj, serInfo, Serialize.theContext)
         this.WriteMembers serInfo
 
-    member val private stringTypeInfo = typeSerializer.GetSerTypeInfo typeof<string> with get
+    member val private stringTypeInfo = TypeSerializer.GetSerTypeInfo typeof<string> with get
 
     member this.WriteObject (obj: obj) =
         if obj = null then
@@ -511,7 +497,7 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
                     if surrogateSelector = null then null 
                     else surrogateSelector.GetSurrogate(objType, Serialize.theContext, ref (Unchecked.defaultof<ISurrogateSelector>))
                 stream.Write(byte ReferenceType.InlineObject)
-                let serTypeInfo = typeSerializer.GetSerTypeInfo objType
+                let serTypeInfo = TypeSerializer.GetSerTypeInfo objType
                 typeSerializer.Serialize(serTypeInfo, stream)
                 if surrogate <> null then
                     marked.Add(obj, marked.Count)
@@ -642,14 +628,14 @@ type internal Deserializer(reader: BinaryReader, marked: List<obj>, typeSerializ
 
     let DeserConstructorArgTypes = [| typeof<SerializationInfo>; typeof<StreamingContext> |]
 
-    let intArrayTypeInfo = typeSerializer.GetSerTypeInfo(typeof<int[]>)
+    let intArrayTypeInfo = TypeSerializer.GetSerTypeInfo(typeof<int[]>)
 
     member private this.ReadArray (arrayTypeInfo: SerTypeInfo, lowerBounds: int[], lengths: int[], arrObj: Array) =
         let elType = arrayTypeInfo.Type.GetElementType()
         if elType.IsPrimitive then
             readPrimitiveArray arrayTypeInfo arrObj
         elif elType.IsValueType then 
-            readValueArray (typeSerializer.GetSerTypeInfo elType) lowerBounds lengths arrObj
+            readValueArray (TypeSerializer.GetSerTypeInfo elType) lowerBounds lengths arrObj
         else 
             readObjectArray lowerBounds lengths arrObj
 
@@ -661,7 +647,7 @@ type internal Deserializer(reader: BinaryReader, marked: List<obj>, typeSerializ
                 field.SetValue(obj, value)
             elif fieldType.IsValueType then
                 let mutable newValue = FormatterServices.GetUninitializedObject(fieldType) 
-                do this.ReadContents(typeSerializer.GetSerTypeInfo fieldType, &newValue)
+                do this.ReadContents(TypeSerializer.GetSerTypeInfo fieldType, &newValue)
                 field.SetValue(obj, newValue)
             else
                 let myObj = obj

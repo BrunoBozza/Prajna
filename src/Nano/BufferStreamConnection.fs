@@ -19,31 +19,48 @@ type BufferStreamConnection() =
     let readQueue  = new BufferQueue(50)
     let writeQueue = new BufferQueue(50)
 
-    let matchOrThrow (choice: Choice<'T,exn>) =
-        match choice with 
-        | Choice1Of2(t) -> t
-        | Choice2Of2(exc) -> raise exc
+//    let matchOrThrow (choice: Choice<'T,exn>) =
+//        match choice with 
+//        | Choice1Of2(t) -> t
+//        | Choice2Of2(exc) -> raise exc
+
+    let asyncReceive (socket: Socket) (buffer: byte[]) (offset: int) (count: int) =
+        Async.FromBeginEnd((fun (asyncCallback, state) -> socket.BeginReceive(buffer, offset, count, SocketFlags.None, asyncCallback, state)),
+                            (fun asyncResult -> socket.EndReceive(asyncResult)))
+
+    let asyncSend (socket: Socket) (buffer: byte[]) (offset: int) (count: int) =
+        Async.FromBeginEnd((fun (asyncCallback, state) -> socket.BeginSend(buffer, offset, count, SocketFlags.None, asyncCallback, state)),
+                            (fun asyncResult -> socket.EndSend(asyncResult)))
+
+    let asyncSendAll (socket: Socket) (buffer: byte[]) (offset: int) (count: int) =
+        async {
+            let mutable curSent = 0
+            while curSent < count do
+                let! sentThisIter = asyncSend socket buffer (offset + curSent) (count - curSent)
+                curSent <- curSent + sentThisIter
+        }
 
     let receiveBuffers(socket: Socket) =
-        let reader = new NetworkStream(socket)
         async {
             Logger.LogF(LogLevel.Info, fun _ -> sprintf "BufferStreamConnection: starting to read")
             try
+                let countBuffer = Array.zeroCreate<byte> 4
                 while true do
-                    let! countBytesOrExc = Async.Catch <| reader.AsyncRead 4
-                    let countBytes = matchOrThrow countBytesOrExc
-                    let count = BitConverter.ToInt32(countBytes, 0)
+                    let mutable countRead = 0
+                    while countRead < 4 do
+                        let! bytesReadThisIter = asyncReceive socket countBuffer countRead (4 - countRead) 
+                        countRead <- countRead + bytesReadThisIter
+                    let count = BitConverter.ToInt32(countBuffer, 0)
                     Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Read count: %d." count)
                     let memoryStream = new MemoryStreamB()
-                    let! unitOrExc = Async.Catch <| memoryStream.AsyncWriteFromStream(reader, int64 count)
-                    matchOrThrow unitOrExc
+                    do! memoryStream.AsyncWriteFromReader(asyncReceive socket, int64 count)
                     memoryStream.Seek(0L, SeekOrigin.Begin) |> ignore
                     readQueue.Add memoryStream
             with
-                | :? IOException -> readQueue.CompleteAdding()
+                | :? IOException | :? SocketException -> readQueue.CompleteAdding()
         }
 
-    let onNewBuffer (writer: NetworkStream) =
+    let onNewBuffer (socket: Socket) =
         let semaphore = new SemaphoreSlim(1) 
         fun (bufferToSend: MemoryStreamB) ->
             async {
@@ -51,27 +68,24 @@ type BufferStreamConnection() =
                     Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Responding with %d bytes." bufferToSend.Length)
                     let countBytes = BitConverter.GetBytes(int bufferToSend.Length)
                     do! semaphore.WaitAsync() |> Async.AwaitIAsyncResult |> Async.Ignore
-                    let! possibleExc = Async.Catch <| writer.AsyncWrite countBytes
-                    do matchOrThrow possibleExc
+                    do! asyncSendAll socket countBytes 0 4
                     let mark = bufferToSend.GetBufferPosLength()
-                    let! unitOrExc = Async.Catch <| bufferToSend.AsyncReadToStream(writer, bufferToSend.Length)
-                    do matchOrThrow unitOrExc
+                    do! bufferToSend.AsyncReadToWriter(asyncSendAll socket, bufferToSend.Length)
                     let getPosition (x,y,z) = y
                     Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "%d bytes written." (int bufferToSend.Position - getPosition mark))
                     bufferToSend.Dispose()
                     semaphore.Release() |> ignore
                 with
-                    | :? IOException -> 
+                    | :? IOException | :? SystemException -> 
                         semaphore.Release() |> ignore
                         writeQueue.CompleteAdding()
-
             } 
             |> Async.Start
 
 
     let sendBuffers(socket: Socket) = 
-        let writer = new NetworkStream(socket)
-        QueueMultiplexer<MemoryStreamB>.AddQueue(writeQueue, onNewBuffer writer)
+        socket.NoDelay <- true
+        QueueMultiplexer<MemoryStreamB>.AddQueue(writeQueue, onNewBuffer socket)
 
     interface IConn with 
 
