@@ -44,15 +44,16 @@ type BufferStreamConnection() =
         async {
             Logger.LogF(LogLevel.Info, fun _ -> sprintf "BufferStreamConnection: starting to read")
             try
-                let countBuffer = Array.zeroCreate<byte> 4
+                let countBuffer = Array.zeroCreate<byte> 8
                 while true do
                     let mutable countRead = 0
-                    while countRead < 4 do
-                        let! bytesReadThisIter = asyncReceive socket countBuffer countRead (4 - countRead) 
+                    while countRead < 8 do
+                        let! bytesReadThisIter = asyncReceive socket countBuffer countRead (8 - countRead) 
                         countRead <- countRead + bytesReadThisIter
-                    let count = BitConverter.ToInt32(countBuffer, 0)
+                    let count = BitConverter.ToInt64(countBuffer, 0)
                     Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Read count: %d." count)
                     let memoryStream = new MemoryStreamB()
+                    memoryStream.WriteInt64 count
                     do! memoryStream.AsyncWriteFromReader(asyncReceive socket, int64 count)
                     memoryStream.Seek(0L, SeekOrigin.Begin) |> ignore
                     readQueue.Add memoryStream
@@ -66,13 +67,12 @@ type BufferStreamConnection() =
             async {
                 try
                     Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Responding with %d bytes." bufferToSend.Length)
-                    let countBytes = BitConverter.GetBytes(int bufferToSend.Length)
+//                    let countBytes = BitConverter.GetBytes(int bufferToSend.Length)
                     do! semaphore.WaitAsync() |> Async.AwaitIAsyncResult |> Async.Ignore
-                    do! asyncSendAll socket countBytes 0 4
-                    let mark = bufferToSend.GetBufferPosLength()
+//                    do! asyncSendAll socket countBytes 0 4
+                    let (_,markPos,_) = bufferToSend.GetBufferPosLength()
                     do! bufferToSend.AsyncReadToWriter(asyncSendAll socket, bufferToSend.Length)
-                    let getPosition (x,y,z) = y
-                    Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "%d bytes written." (int bufferToSend.Position - getPosition mark))
+                    Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "%d bytes written." (int bufferToSend.Position - markPos))
                     bufferToSend.Dispose()
                     semaphore.Release() |> ignore
                 with
@@ -84,7 +84,6 @@ type BufferStreamConnection() =
 
 
     let sendBuffers(socket: Socket) = 
-        socket.NoDelay <- true
         QueueMultiplexer<MemoryStreamB>.AddQueue(writeQueue, onNewBuffer socket)
 
     interface IConn with 
@@ -93,6 +92,7 @@ type BufferStreamConnection() =
 
         member this.Init(socket: Socket, state: obj) = 
             Logger.LogF(LogLevel.Info, fun _ -> sprintf "New connection created (%A)." socket.LocalEndPoint)
+            socket.NoDelay <- true
             (this :> IConn).Socket <- socket
             let onConnect : BufferQueue -> BufferQueue -> unit = downcast state
             onConnect readQueue writeQueue

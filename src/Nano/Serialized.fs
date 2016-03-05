@@ -42,6 +42,8 @@ type Serialized internal (bytes: MemoryStreamB) =
 
 type Serializer private () =
 
+    static let int64Zero : byte[] = BitConverter.GetBytes(0L)
+
     member val serializer = 
         let memStreamBConstructors = (fun () -> new MemoryStreamB() :> MemoryStream), (fun (a,b,c,d,e) -> new MemoryStreamB(a,b,c,d,e) :> MemoryStream)
         GenericSerialization.GetDefaultFormatter(CustomizedSerializationSurrogateSelector(memStreamBConstructors))
@@ -50,7 +52,10 @@ type Serializer private () =
 
     static member Serialize<'T>(obj: 'T) =
         let bytes = new MemoryStreamB()
+        bytes.Write(int64Zero, 0, 8)
         Serializer.instance.serializer.Serialize(bytes, obj)
+        bytes.Seek(0L, SeekOrigin.Begin) |> ignore
+        bytes.WriteInt64(bytes.Length - 8L)
         bytes.Seek(0L, SeekOrigin.Begin) |> ignore
         new Serialized<'T>(bytes)
 
@@ -58,6 +63,7 @@ type Serializer private () =
         Serializer.instance.serializer.Serialize(stream, obj)
 
     static member internal Deserialize(bytes: MemoryStreamB) =
+        bytes.ReadInt64() |> ignore
         Serializer.instance.serializer.Deserialize(bytes)
 
 and Serialized<'T> internal (bytes: MemoryStreamB) =

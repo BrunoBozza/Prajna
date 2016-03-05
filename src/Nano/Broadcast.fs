@@ -74,7 +74,7 @@ type Broadcaster(clients: ClientNode[]) =
         Array.foldBack forwardOne stacks None |> Option.get
 
     let getChunks (stream: MemoryStreamB) : MemoryStreamB[] =
-        let chunkSize = (stream.Length / 100L) + 1L
+        let chunkSize = (stream.Length / 300L) + 1L
         let ret = 
             [|while stream.Position < stream.Length do
                 let curChunkSize = min (int64 chunkSize) (stream.Length - stream.Position)

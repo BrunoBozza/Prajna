@@ -61,6 +61,8 @@ let resetTiming, time =
 
 
 let broadcastCluster() =
+    do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
+    
     Prajna.Tools.BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
 
     resetTiming()
@@ -79,18 +81,17 @@ let broadcastCluster() =
     time "Starting broadcaster"
 
     let d = 
-        broadcaster.BroadcastParallel(fun _ ->
+        broadcaster.BroadcastChained(fun _ ->
             let m = Environment.MachineName
             printfn "Hello from %s!" m
             m)
         |> Async.RunSynchronously
+    printfn "Machine names: %A" (d.Remotes |> Array.map (fun r -> r.AsyncGetValue()) |> Async.Parallel |> Async.RunSynchronously )
     time "Broadcasting machine name fetch"
 
-    printfn "Machine names: %A" (d.Remotes |> Array.map (fun r -> r.AsyncGetValue()) |> Async.Parallel |> Async.RunSynchronously )
-
     resetTiming()
-    let longs = Array.init 5 (fun _ -> 
-                    Array.init 100000000 (fun i -> i)
+    let longs = Array.init 4 (fun _ -> 
+                    Array.init 125000000 (fun i -> i)
                 ) 
     time "Initializing arrays"
 
@@ -195,5 +196,6 @@ let main argv =
     //rawLatency argv
 
     latency argv
+    // broadcastCluster()
 
     0 // return an integer exit code

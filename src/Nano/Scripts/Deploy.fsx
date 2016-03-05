@@ -104,21 +104,21 @@ let machines =
     |> Async.Parallel
     |> Async.RunSynchronously
 
-let testResults = 
-    machines 
-    |> Array.map (fun h -> async {return testConnection h})
-    |> Async.Parallel
-    |> Async.RunSynchronously
-
-testAllConnections machines
-
-let pids =
-    machines
-    |> Array.map (fun host -> async{ return createRemoteProcess @"c:\Nano\NanoServer.exe 1500" host})
-    |> Async.Parallel
-    |> Async.RunSynchronously
-
-let allSuccessful = pids |> Seq.forall (function | Pid(_) -> true | _ -> false)
+//let testResults = 
+//    machines 
+//    |> Array.map (fun h -> async {return testConnection h})
+//    |> Async.Parallel
+//    |> Async.RunSynchronously
+//
+//testAllConnections machines
+//
+//let pids =
+//    machines
+//    |> Array.map (fun host -> async{ return createRemoteProcess @"c:\Nano\NanoServer.exe 1500" host})
+//    |> Async.Parallel
+//    |> Async.RunSynchronously
+//
+//let allSuccessful = pids |> Seq.forall (function | Pid(_) -> true | _ -> false)
 
 //let killResults =
 //    pids 

@@ -415,6 +415,30 @@ module NanoTests =
         time (sprintf "%d round trips" numTrips)
 
     [<Test>]
+    let NanoLatencyParallel() =
+        printfn "Starting"
+        use server = new ServerNode(1500)
+        use client = new ClientNode( ServerNode.GetDefaultIP(), 1500 )
+        let r = client.AsyncNewRemote(fun _ -> 1) |> Async.RunSynchronously
+        time "Connected and created"
+
+        do r.AsyncGetValue() |> Async.RunSynchronously |> ignore
+        time "First get"
+
+        let numTrips = 1000
+        let numAsyncs = 20
+        resetTiming()
+        let vals = 
+            Array.init numAsyncs (fun i -> 
+                async { 
+                    for j in i..numAsyncs..numTrips do 
+                        do! r.AsyncGetValue() |> Async.Ignore  
+                })
+            |> Async.Parallel
+            |> Async.RunSynchronously
+        time (sprintf "%d round trips" numTrips)
+
+    [<Test>]
     let NanoApplyAndGetAsyncValue() = 
         use __ = new ServerNode(1500)
         use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
