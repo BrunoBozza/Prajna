@@ -106,10 +106,13 @@ let broadcastCluster() =
 let latency (argv: string[]) =
 
     let numTrips = Int32.Parse(argv.[0])
+    let numBytes = Int32.Parse(argv.[1])
 
     printfn "Starting"
     let client = new ClientNode( getOneNetClusterIPs [21] |> Seq.nth 0, 1500 )
-    let r = client.AsyncNewRemote(fun _ -> 1) |> Async.RunSynchronously
+    let r = 
+        client.AsyncNewRemote(fun _ -> let rnd = new Random() in Array.init numBytes (fun _ -> rnd.Next(256) |> byte)) 
+        |> Async.RunSynchronously
     time "Connected and created"
 
     do r.AsyncGetValue() |> Async.RunSynchronously |> ignore
@@ -119,6 +122,36 @@ let latency (argv: string[]) =
 
     let sw = Stopwatch.StartNew()
     let vals = Array.init numTrips (fun _ -> r.AsyncGetValue() |> Async.RunSynchronously)
+    let elapsed = sw.Elapsed
+    printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
+
+let latencyParallel (argv: string[]) =
+
+    let numTrips = Int32.Parse(argv.[0])
+    let numBytes = Int32.Parse(argv.[1])
+    let numAsyncs = Int32.Parse(argv.[2])
+
+    printfn "Starting"
+    let client = new ClientNode( getOneNetClusterIPs [21] |> Seq.nth 0, 1500 )
+    let r = 
+        client.AsyncNewRemote(fun _ -> let rnd = new Random() in Array.init numBytes (fun _ -> rnd.Next(256) |> byte)) 
+        |> Async.RunSynchronously
+    time "Connected and created"
+
+    do r.AsyncGetValue() |> Async.RunSynchronously |> ignore
+    time "First get"
+
+    resetTiming()
+    let sw = Stopwatch.StartNew()
+    let vals = 
+        Array.init numAsyncs (fun i -> 
+            async { 
+                for j in i..numAsyncs..numTrips do 
+                    do! r.AsyncGetValue() |> Async.Ignore  
+            })
+        |> Async.Parallel
+        |> Async.RunSynchronously
+//        Array.init numTrips (fun _ -> r.AsyncGetValue() |> Async.RunSynchronously)
     let elapsed = sw.Elapsed
     printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
 
@@ -190,12 +223,8 @@ let rawLatencyUdp (args: string[]) =
 
 [<EntryPoint>]
 let main argv = 
-
     // do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
-
     //rawLatency argv
-
-    latency argv
+    latencyParallel argv
     // broadcastCluster()
-
     0 // return an integer exit code
