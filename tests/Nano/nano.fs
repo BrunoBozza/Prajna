@@ -17,8 +17,6 @@ open Prajna.Nano
 [<TestFixture(Description = "Tests for Nano project")>]
 module NanoTests =
 
-    do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"|])
-
     let disposeAll xs = xs |> Seq.iter(fun x -> (x :> IDisposable).Dispose())
 
 
@@ -28,7 +26,8 @@ module NanoTests =
 
     [<SetUp>]
     let SetUp() = 
-        do BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
+        do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"|])
+        do BufferListStream<byte>.BufferSizeDefault <- 1 <<< 18
 
     [<Test>]
     let NanoStartLocalServer() = 

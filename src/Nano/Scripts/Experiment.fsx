@@ -4,7 +4,28 @@
 
 #load "load-project-debug.fsx"
 
+open Prajna.Tools
 open Prajna.Nano
+
+
+
+do BufferListStream<byte>.BufferSizeDefault <- 1 <<< 10
+do BufferListStream<byte>.InitSharedPool()
+
+
+let bytes = Array.init 1500 (fun i -> byte i)
+let ms = new MemoryStreamB()
+ms.Capacity64 <- 2500L
+
+//ms.WriteArr(bytes)
+
+ms.Position <- 5L
+
+let reader = new StreamReader<byte>(ms, 500L, 600L)
+let ret = reader.ApplyFnToBuffers( fun bpl -> printfn "%A" bpl)
+
+ms.Capacity64 <- 20L
+
 
 let remoteNextClients : Remote<ClientNode>[] = null
 

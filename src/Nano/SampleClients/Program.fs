@@ -111,7 +111,7 @@ let latency (argv: string[]) =
     printfn "Starting"
     let client = new ClientNode( getOneNetClusterIPs [21] |> Seq.nth 0, 1500 )
     let r = 
-        client.AsyncNewRemote(fun _ -> let rnd = new Random() in Array.init numBytes (fun _ -> rnd.Next(256) |> byte)) 
+        client.AsyncNewRemote(fun _ -> Array.init numBytes (fun i -> byte (i % 256))) 
         |> Async.RunSynchronously
     time "Connected and created"
 
@@ -223,8 +223,9 @@ let rawLatencyUdp (args: string[]) =
 
 [<EntryPoint>]
 let main argv = 
+    BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
     // do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
     //rawLatency argv
-    latencyParallel argv
+    latency argv
     // broadcastCluster()
     0 // return an integer exit code

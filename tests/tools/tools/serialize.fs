@@ -171,6 +171,26 @@ module SerializationTests =
             Assert.AreEqual(Array.init 3 (ignoreArg next), Array.init 3 (ignoreArg other))
 
     [<Test>]
+    [<Category("Performance")>]
+    let SerPerfSmallClosure() =
+        let cur = ref 0
+        let longs = [|1L..10000L|]
+        let next() = longs |> Array.sum
+        do next() |> ignore; next()|> ignore; next()|> ignore
+        let sw = new Stopwatch()
+        let numIters = 100
+        sw.Start()
+        for i = 1 to numIters do
+            roundTrip (MemoryStreamConstructors.[0]) next :?> (unit -> int64) |> ignore
+        sw.Stop()
+        printfn "%s" <| sprintf "%d round trips with MemoryStreamB constructor: %A. (average: %f)" numIters sw.Elapsed (sw.Elapsed.TotalMilliseconds / float numIters)
+        sw.Restart()
+        for i = 1 to numIters do
+            roundTrip (MemoryStreamConstructors.[1]) next :?> (unit -> int64) |> ignore
+        sw.Stop()
+        printfn "%s" <| sprintf "%d round trips with regular .net MemoryStream constructor: %A. (average: %f)" numIters sw.Elapsed (sw.Elapsed.TotalMilliseconds / float numIters)
+
+    [<Test>]
     let testClosureNegative() =
         let cur = ref 0
         let next() = let ret = !cur in cur := ret + 1; ret

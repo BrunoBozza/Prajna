@@ -17,7 +17,7 @@ let startNanoServer (argv: string[]) =
     else
         match UInt16.TryParse argv.[0] with
         | true, port ->
-            BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
+            BufferListStream<byte>.BufferSizeDefault <- 1 <<< 18
             BufferListStream<byte>.InitSharedPool()
             let thisAsm = System.Reflection.Assembly.GetExecutingAssembly()
             printfn "Starting NanoServer on port %d" port

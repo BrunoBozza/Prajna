@@ -34,7 +34,7 @@ type QueueMultiplexer<'T> private () =
                     if queueIndex <> -1 then
                         callbacks.[queueIndex] buffer
                 with
-                    | :? ArgumentException ->
+                    | e ->
                         Logger.LogF(LogLevel.Info, fun _ -> sprintf "Multiplexer thread stopping")
                         stop <- true
             shutdowns |> Seq.iter (fun f -> f()))

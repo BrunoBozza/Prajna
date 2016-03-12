@@ -390,9 +390,9 @@ type [<AllowNullLiteral>] RefCntBuf<'T>() =
         offset <- _offset
         length <- _length
 
-    member internal x.Buffer with get() = buffer
-    member internal x.Offset with get() = offset
-    member internal x.Length with get() = length
+    member x.Buffer with get() = buffer
+    member x.Offset with get() = offset
+    member x.Length with get() = length
 
     member val UserToken : obj = null with get, set
 
@@ -1244,7 +1244,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     static member InitSharedPool() =
         BufferListStream<'T>.InitMemStack(1024, BufferListStream<'T>.BufferSizeDefault)
 
-    member internal x.GetStackElem() =
+    member x.GetStackElem() =
         let (event, buf) = RBufPart<'T>.GetFromPool(x.GetInfoId()+":RBufPart", BufferListStream<'T>.MemStack,
                                                     fun () -> new RBufPart<'T>() :> SafeRefCnt<RefCntBuf<'T>>)
         //Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Use Element %d for stream %d" buf.Id x.Id)
