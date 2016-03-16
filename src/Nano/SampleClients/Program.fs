@@ -169,6 +169,14 @@ let roundTrip (socket: Socket) (bytes: byte[]) (count: int) =
     sendAll socket bytes 0 count
     receiveAll socket bytes 0 count
 
+let roundTripMemoryStream (socket: Socket) (bytes: MemoryStreamB) =
+    let serStream = new StreamReader<_>(bytes, 0L, bytes.Length)
+    serStream.ApplyFnToParts(fun part -> sendAll socket part.Elem.Buffer part.Offset (int part.Count))
+    let len = int bytes.Length
+    let retBytes = Array.zeroCreate<byte> len
+    receiveAll socket retBytes 0 len
+    new MemoryStreamB(retBytes)
+
 let roundTrip2Calls (socket: Socket) (bytes: byte[]) (count: int) =
     socket.Send(bytes, 0, 4, SocketFlags.None) |> ignore
     socket.Send(bytes, 4, count - 4, SocketFlags.None) |> ignore
@@ -196,7 +204,66 @@ let rawLatency (args: string[]) =
     printfn "First round trip: %A" sw.Elapsed
     sw.Restart()
     for i = 1 to numTrips do
-        roundTrip2Calls client bytes count
+        roundTrip client bytes count
+    let elapsed = sw.Elapsed
+    printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
+
+let rawLatencyMemoryStream (args: string[]) =
+    printfn "Starting"
+    let machine = Int32.Parse(args.[0])
+    let port = Int32.Parse(args.[1])
+    let numTrips = Int32.Parse(args.[2])
+    let count = Int32.Parse(args.[3])
+    let client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+    client.NoDelay <- true
+    client.Connect(getOneNetClusterIPs [machine] |> Seq.nth 0, port)
+    printfn "Connected"
+    let bytes = 
+        let r = new Random()
+        Array.init<byte> count (fun _ -> r.Next(256) |> byte)
+    let countBuf = BitConverter.GetBytes(int64 (count - 8))
+    Array.Copy(countBuf, bytes, 8)
+    let sw = Stopwatch.StartNew()
+    roundTrip client bytes count
+    printfn "First round trip: %A" sw.Elapsed
+    sw.Restart()
+    for i = 1 to numTrips do
+        let ms = new MemoryStreamB(bytes)
+        let ms2 = roundTripMemoryStream client ms
+        if ms.Length <> ms2.Length then
+            raise <| Exception("Different lengths")
+    let elapsed = sw.Elapsed
+    printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
+
+let rawLatencyWithSer (args: string[]) =
+    printfn "Starting"
+    let machine = Int32.Parse(args.[0])
+    let port = Int32.Parse(args.[1])
+    let numTrips = Int32.Parse(args.[2])
+    let count = Int32.Parse(args.[3])
+    let client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+    client.NoDelay <- true
+    client.Connect(getOneNetClusterIPs [machine] |> Seq.nth 0, port)
+    printfn "Connected"
+
+    let mutable x = 10
+    let closure() = x <- x + 1; x
+    let sw = Stopwatch.StartNew()
+    let closureMS = (Serializer.Serialize(closure)).Bytes
+    let echoClosure = roundTripMemoryStream client closureMS |> Serializer.Deserialize :?> (unit -> int)
+    printfn "First round trip: %A" sw.Elapsed
+    printfn "Closure size: %d" closureMS.Length
+    printfn "Local closure result: %d" (closure())
+    printfn "Round tripped closure result: %d" (echoClosure())
+    sw.Restart()
+
+    for i = 1 to numTrips do
+        let serClosure = Serializer.Serialize(closure)
+        let ms2 = roundTripMemoryStream client serClosure.Bytes
+        let deserClosureObj = Serializer.Deserialize(ms2)
+        let deserCloser = deserClosureObj :?> (unit -> int)
+        ()
+
     let elapsed = sw.Elapsed
     printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
 
@@ -223,9 +290,10 @@ let rawLatencyUdp (args: string[]) =
 
 [<EntryPoint>]
 let main argv = 
-    BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
+//    BufferListStream<byte>.BufferSizeDefault <- 1 <<< 16
     // do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
-    //rawLatency argv
-    latency argv
+    BufferListStream<byte>.InitSharedPool()
+    rawLatencyWithSer argv
+    //latency argv
     // broadcastCluster()
     0 // return an integer exit code

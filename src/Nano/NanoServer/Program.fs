@@ -17,7 +17,7 @@ let startNanoServer (argv: string[]) =
     else
         match UInt16.TryParse argv.[0] with
         | true, port ->
-            BufferListStream<byte>.BufferSizeDefault <- 1 <<< 18
+//            BufferListStream<byte>.BufferSizeDefault <- 1 <<< 16
             BufferListStream<byte>.InitSharedPool()
             let thisAsm = System.Reflection.Assembly.GetExecutingAssembly()
             printfn "Starting NanoServer on port %d" port
@@ -48,6 +48,26 @@ let echo2Calls (socket: Socket) (bytes: byte[]) (count: int) =
     sendAll socket bytes 0 4
     sendAll socket bytes 4 (count - 4)
 
+let echoWithProperCount (socket: Socket) (bytes: byte[]) =
+    receiveAll socket bytes 0 8
+    let msgLen = BitConverter.ToInt64(bytes, 0)
+    receiveAll socket bytes 8 (int msgLen)
+    sendAll socket bytes 0 (int msgLen + 8)
+
+let echoWithSer (socket: Socket) (bytes: byte[]) =
+    receiveAll socket bytes 0 8
+    let msgLen = BitConverter.ToInt64(bytes, 0)
+    receiveAll socket bytes 8 (int msgLen)
+
+    let ms = new MemoryStreamB(bytes, 0, int msgLen + 8)
+    let closure = Serializer.Deserialize ms :?> (unit -> int)
+    closure() |> ignore
+    let response = Serializer.Serialize(closure).Bytes
+    response.Seek(0L, System.IO.SeekOrigin.Begin) |> ignore
+
+    let reader = new StreamReader<byte>(response, 0L, response.Length)
+    reader.ApplyFnToParts(fun part -> sendAll socket part.Elem.Buffer part.Offset (int part.Count))
+
 let startEchoThread (port: int) (count: int) = 
     printfn "Creating TcpListener"
     let server = new TcpListener( IPAddress.Any, port)
@@ -63,7 +83,27 @@ let startEchoThread (port: int) (count: int) =
                     let buffer = Array.zeroCreate<byte> 10000000
                     printfn "Echo thread running on port %d" port
                     while true do
-                        echo2Calls socket buffer count
+                        do echoWithProperCount socket buffer 
+                with  
+                    | :? SocketException -> ()))
+    serverThread.Start()
+
+let startEchoThreadWithSer (port: int) (count: int) = 
+    printfn "Creating TcpListener"
+    let server = new TcpListener( IPAddress.Any, port)
+    server.Start()
+    printfn "TcpListener started"
+    let serverThread = 
+        new Thread(new ThreadStart(fun _ -> 
+            printfn "TcpListener thread start"
+            while true do 
+                try 
+                    let socket = server.AcceptSocket()
+                    socket.NoDelay <- true
+                    let buffer = Array.zeroCreate<byte> 10000000
+                    printfn "Echo thread running on port %d" port
+                    while true do
+                        do echoWithSer socket buffer 
                 with  
                     | :? SocketException -> ()))
     serverThread.Start()
@@ -93,8 +133,8 @@ let startEchoThreadUdp (port: int) =
 let main argv = 
 
 //    do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "err" (*; "-con"*)|])
-    startNanoServer argv    
+    //startNanoServer argv    
 
-//    startEchoThread (Int32.Parse(argv.[0])) (Int32.Parse(argv.[1]))
-//    0
+    startEchoThreadWithSer (Int32.Parse(argv.[0])) (Int32.Parse(argv.[1]))
+    0
 

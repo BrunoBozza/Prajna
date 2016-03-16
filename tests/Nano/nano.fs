@@ -19,7 +19,6 @@ module NanoTests =
 
     let disposeAll xs = xs |> Seq.iter(fun x -> (x :> IDisposable).Dispose())
 
-
     [<TearDown>]
     let TearDown() =
         QueueMultiplexer<byte[]>.Shutdown()
@@ -400,6 +399,7 @@ module NanoTests =
     [<Test>]
     let NanoLatency() =
         printfn "Starting"
+//        do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "med"|])
         use server = new ServerNode(1500)
         use client = new ClientNode( ServerNode.GetDefaultIP(), 1500 )
         let r = client.AsyncNewRemote(fun _ -> 1) |> Async.RunSynchronously
@@ -412,10 +412,12 @@ module NanoTests =
         resetTiming()
         let vals = Array.init numTrips (fun _ -> r.AsyncGetValue() |> Async.RunSynchronously)
         time (sprintf "%d round trips" numTrips)
+        Assert.AreEqual(vals, Array.init numTrips (fun _ -> 1))
 
     [<Test>]
     let NanoLatencyParallel() =
         printfn "Starting"
+//        do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "med"|])
         use server = new ServerNode(1500)
         use client = new ClientNode( ServerNode.GetDefaultIP(), 1500 )
         let r = client.AsyncNewRemote(fun _ -> 1) |> Async.RunSynchronously

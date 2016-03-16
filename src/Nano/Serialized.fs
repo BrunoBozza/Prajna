@@ -62,7 +62,7 @@ type Serializer private () =
     static member Serialize<'T>(obj: 'T, stream: MemoryStreamB) =
         Serializer.instance.serializer.Serialize(stream, obj)
 
-    static member internal Deserialize(bytes: MemoryStreamB) =
+    static member Deserialize(bytes: MemoryStreamB) =
         bytes.ReadInt64() |> ignore
         Serializer.instance.serializer.Deserialize(bytes)
 
