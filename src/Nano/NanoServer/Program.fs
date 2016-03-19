@@ -17,7 +17,6 @@ let startNanoServer (argv: string[]) =
     else
         match UInt16.TryParse argv.[0] with
         | true, port ->
-//            BufferListStream<byte>.BufferSizeDefault <- 1 <<< 16
             BufferListStream<byte>.InitSharedPool()
             let thisAsm = System.Reflection.Assembly.GetExecutingAssembly()
             printfn "Starting NanoServer on port %d" port
@@ -132,9 +131,11 @@ let startEchoThreadUdp (port: int) =
 [<EntryPoint>]
 let main argv = 
 
-//    do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "err" (*; "-con"*)|])
-    //startNanoServer argv    
+    do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
 
-    startEchoThreadWithSer (Int32.Parse(argv.[0])) (Int32.Parse(argv.[1]))
-    0
+    BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
+    startNanoServer argv    
+
+    // startEchoThreadWithSer (Int32.Parse(argv.[0])) (Int32.Parse(argv.[1]))
+    //0
 

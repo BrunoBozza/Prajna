@@ -37,6 +37,7 @@ open System.Runtime.InteropServices
 open Prajna.Tools
 open Prajna.Tools.Queue
 open Prajna.Tools.FSharp
+open Prajna.Tools.Utils
 
 // =====================================================================
 
@@ -1988,6 +1989,16 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
                 x.MoveForwardAfterRead(readAmt)
                 bCount <- bCount - readAmt
         }
+
+    member x.MAsyncReadToWriter(writeAll : byte[] -> int -> int -> MAsync<unit>, count : int64) =
+        if count = 0L then
+            Sync ()
+        else
+            let (buf, pos, amt) = x.GetReadBuffer()
+            let readAmt = Math.Min(count, int64 amt)
+            writeAll buf.Buffer (int pos) (int readAmt) |> bind (fun _ ->
+            x.MoveForwardAfterRead(readAmt)
+            x.MAsyncReadToWriter(writeAll, count - readAmt))
 
     // read count starting from offset, and don't move position forward
     override x.ReadToStream(s : Stream, offset : int64, count : int64) =

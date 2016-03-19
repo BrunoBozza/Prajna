@@ -46,6 +46,23 @@ type ReferenceComparer<'T>()=
 
 /// Utilities
 module Utils =
+
+    //type MAsync<'T> = Choice<'T, Async<'T>>
+    type MAsync<'T> =
+        | Sync of 'T
+        | AAsync of Async<'T>
+
+    let bind (binder: 'T -> MAsync<'U>) (choice: MAsync<'T>) : MAsync<'U> =
+        match choice with
+        | Sync(syncPrev) -> binder syncPrev
+        | AAsync(asyncPrev) -> 
+            AAsync(async { 
+                let! prev = asyncPrev
+                match binder prev with
+                | Sync(syncRet) -> return syncRet
+                | AAsync(asyncRet) -> return! asyncRet
+            })
+
     // Null checks
     // See: http://latkin.org/blog/2015/05/18/null-checking-considerations-in-f-its-harder-than-you-think/
 

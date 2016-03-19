@@ -18,13 +18,14 @@ module BaseADTs =
 
     type Request = 
         | RunDelegate of int * Delegate
+        | RunDelegateAsync of int * Delegate
         | RunDelegateAndGetValue of int * Delegate
-        | RunDelegateAndAsyncGetValue of int * Delegate
+        | RunDelegateAsyncAndGetValue of int * Delegate
         | RunDelegateSerialized of int * MemoryStreamB
         | GetValue of int
 
     type Response =
-        | RunDelegateResponse of int
+        | RunDelegateResponse of Choice<int, Exception>
         | GetValueResponse of obj
 
 

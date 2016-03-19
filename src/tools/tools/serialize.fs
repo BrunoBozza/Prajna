@@ -355,18 +355,22 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
         | TypeCode.Single -> stream.Write (obj :?> Single)
         | _ -> failwith <| sprintf "Unknown primitive type %A" (obj.GetType())
 
-    let writeMemoryBlittableArray (arrObj: Array, elemSize: int, memStream: MemoryStream) =
-        match memStream with
+    let writeMemoryBlittableArray =
+        match stream.BaseStream with
             | :? BufferListStream<byte> as ms ->
-                ms.WriteArrT(arrObj, 0, arrObj.Length, elemSize)
-            | _ as memStream ->
-                let sizeInBytes = arrObj.Length * elemSize
-                let curPos = int memStream.Position
-                let newLen = int64 (curPos + sizeInBytes)
-                memStream.SetLength newLen
-                let buffer = memStream.GetBuffer()
-                Buffer.BlockCopy(arrObj, 0, buffer, curPos, sizeInBytes)
-                memStream.Position <- newLen
+                fun (arrObj: Array, elemSize: int, offsetInElements: int, lengthInElements: int) ->
+                    ms.WriteArrT(arrObj, offsetInElements, lengthInElements, elemSize)
+            | :? MemoryStream as memStream ->
+                fun (arrObj: Array, elemSize: int, offsetInElements: int, lengthInElements: int) ->
+                    let sizeInBytes = lengthInElements * elemSize
+                    let curPos = int memStream.Position
+                    let newLen = int64 (curPos + sizeInBytes)
+                    memStream.SetLength newLen
+                    let buffer = memStream.GetBuffer()
+                    Buffer.BlockCopy(arrObj, offsetInElements * elemSize, buffer, curPos, sizeInBytes)
+                    memStream.Position <- newLen
+            | _ -> 
+                fun _ -> raise <| Exception("Can't memory blit to non-memory stream.")
 
     let writePrimitiveArray : SerTypeInfo * int[] * int[] * Array -> unit = 
         let writePrimitiveArrayOneByOne(arrayTypeInfo: SerTypeInfo, lowerBounds: int[], lengths: int[], arrObj: Array) = 
@@ -388,9 +392,22 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
         match stream.BaseStream with
         | :? MemoryStream as memStream -> 
             fun (arrayTypeInfo: SerTypeInfo, lowerBounds: int[], lengths: int[], arrObj: Array) -> 
-                writeMemoryBlittableArray (arrObj, arrayTypeInfo.GetElementSize(), memStream)
+                writeMemoryBlittableArray(arrObj, arrayTypeInfo.GetElementSize(), 0, arrObj.Length)
         | _ -> writePrimitiveArrayOneByOne
 
+    let writeMemoryStreamB =
+        match stream.BaseStream with
+        | :? MemoryStreamB as outStreamB ->
+            fun (inStreamObject: MemoryStreamB) -> 
+                let count = inStreamObject.Length - inStreamObject.Position
+                outStreamB.WriteInt64(count)
+                outStreamB.AppendNoCopy(inStreamObject, inStreamObject.Position, count)
+        | otherStream ->
+            fun (inStream: MemoryStreamB) -> 
+                otherStream.WriteInt64(inStream.Length - inStream.Position)
+                let reader = Prajna.Tools.StreamReader<byte>(inStream, inStream.Position, inStream.Length - inStream.Position)
+                reader.ApplyFnToBuffers(fun (buf,pos,len) -> writeMemoryBlittableArray(buf, sizeof<byte>, pos, len))
+    
     let writeValueArray : Type * int[] * int[] * Array -> unit = 
         let writeOtherValueTypeArray(elType: Type, lowerBounds: int[], lengths: int[], arrObj: Array) = 
             let inc = Serialize.incrementIndex lowerBounds lengths
@@ -513,6 +530,9 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
                     | :? string as strObj ->  
                         marked.Add(obj, marked.Count)
                         stream.Write strObj  
+                    | :? MemoryStreamB as memStreamB -> 
+                        marked.Add(obj, marked.Count)
+                        writeMemoryStreamB memStreamB
                     | :? ISerializable as customSerObj -> 
                         // omitting marked.Add because custom serialization requires writing 
                         // the SerInfo type before the actual object, so WriteCustomSerializedObject will do this
@@ -579,6 +599,20 @@ type internal Deserializer(reader: BinaryReader, marked: List<obj>, typeSerializ
             fun (arrayTypeInfo: SerTypeInfo) (arrObj: Array) -> 
                 readMemoryBlittableArray (arrObj, arrayTypeInfo.GetElementSize(), memStream)
         | _ -> readPrimitiveArrayOneByOne
+
+    let readMemoryStreamB = 
+        match reader.BaseStream with
+        | :? MemoryStreamB as inStream ->
+            fun (outObject: MemoryStreamB) ->
+                let count = inStream.ReadInt64()
+                outObject.AppendNoCopy(inStream, inStream.Position, count)
+                outObject.Seek(0L, SeekOrigin.Begin) |> ignore
+                inStream.Position <- inStream.Position + count
+        | otherInStream ->
+            fun (outObject: MemoryStreamB) ->
+                let count = otherInStream.ReadInt64()
+                outObject.WriteFromStream(otherInStream, count)
+                outObject.Seek(0L, SeekOrigin.Begin) |> ignore
 
     let readValueArray : SerTypeInfo -> int[] -> int[] -> Array -> unit = 
         let readOtherValueTypeArray (elType: SerTypeInfo) (lowerBounds: int[]) (lengths: int[]) (arrObj: Array) = 
@@ -742,6 +776,11 @@ type internal Deserializer(reader: BinaryReader, marked: List<obj>, typeSerializ
                     let str = reader.ReadString()
                     marked.Add str
                     k str
+                | memStreamBType when memStreamBType = typeof<MemoryStreamB> -> 
+                    let ms = new MemoryStreamB()
+                    readMemoryStreamB ms
+                    marked.Add ms
+                    k ms
                 | arrType when arrType.IsArray ->
                     let rank = reader.ReadInt32()
                     let lowerBounds : int[] = Array.zeroCreate rank

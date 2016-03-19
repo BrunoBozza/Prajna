@@ -44,7 +44,7 @@ module NanoTests =
         use __ = new ServerNode(1500) 
         use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
         async {
-            let! r = cn.AsyncNewRemote(fun _ -> 5)
+            let! r = cn.NewRemote(fun _ -> 5)
             return ()
         }
         |> Async.RunSynchronously
@@ -55,12 +55,82 @@ module NanoTests =
         use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
         let value = 
             async {
-                let! r = cn.AsyncNewRemote(fun _ -> "Test")
-                let! ret =  r.AsyncGetValue()
+                let! r = cn.NewRemote(fun _ -> "Test")
+                let! ret =  r.GetValue()
                 return ret
             }
             |> Async.RunSynchronously
         Assert.AreEqual(value, "Test")
+
+    let nanoException (code: ClientNode -> Async<unit>) (expectedMessage: string) =
+        use sn = new ServerNode(1500)
+        use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
+        let value = 
+            async {
+                try 
+                    do! code cn
+                    Assert.Fail()
+                    return "foo"
+                with 
+                    |e -> 
+                        return e.Message
+            }
+            |> Async.RunSynchronously
+        Assert.AreEqual(expectedMessage, value)
+
+    [<Test>]
+    let NanoNewRemoteException() = 
+        nanoException (fun cn -> cn.NewRemote(fun _ -> raise <| Exception("Test")) |> Async.Ignore) "Test"
+
+    [<Test>]
+    let NanoApplyException() = 
+        nanoException (fun cn -> async {
+                let! r = cn.NewRemote(fun _ -> 1)
+                return! r.Apply(fun _ -> raise <| Exception("Test")) |> Async.Ignore
+            }) "Test"
+
+    [<Test>]
+    let NanoApplyAsyncWithAsyncException() = 
+        nanoException (fun cn -> async {
+                let! r = cn.NewRemote(fun _ -> 1)
+                return! 
+                    r.ApplyAsync(fun x ->  async {
+                        do! Async.Sleep 200
+                        raise <| Exception("Test")
+                        return x + 1}) 
+                    |> Async.Ignore
+            }) "Test"
+
+    [<Test>]
+    let NanoApplyAsyncWithSyncException() = 
+        nanoException (fun cn -> async {
+                let! r = cn.NewRemote(fun _ -> 1)
+                return! 
+                    r.ApplyAsync(fun x ->  raise <| Exception("Test"); async {return x + 1})
+                    |> Async.Ignore
+            }) "Test"
+
+    [<Test>]
+    let NanoApplyAndGetValueException() = 
+        nanoException (fun cn -> async {
+                let! r = cn.NewRemote(fun _ -> 1)
+                return! r.ApplyAndGetValue(fun _ -> raise <| Exception("Test")) |> Async.Ignore
+            }) "Test"
+
+    [<Test>]
+    let NanoApplyAsyncAndGetValueException() = 
+        nanoException (fun cn -> async {
+                let! r = cn.NewRemote(fun _ -> 1)
+                return! r.ApplyAsyncAndGetValue(fun _ -> raise <| Exception("Test")) |> Async.Ignore
+            }) "Test"
+
+    [<Test>]
+    let NanoApplySerializedException() = 
+        nanoException (fun cn -> async {
+                let serFunc = Serializer.Serialize<Func<int,int>>(fun _ -> raise <| Exception("Test"))
+                let! r = cn.NewRemote(fun _ -> 1)
+                return! r.Apply(serFunc) |> Async.Ignore
+            }) "Test"
 
     [<Test>]
     let NanoGetValueSequential() = 
@@ -70,9 +140,9 @@ module NanoTests =
         let sw = Stopwatch.StartNew()
         for i = 1 to numIters do
             async {
-                let! r = cn.AsyncNewRemote(fun _ -> i)
-                let! r2 = r.AsyncApply(fun x -> x * x)
-                let! ret =  r.AsyncGetValue()
+                let! r = cn.NewRemote(fun _ -> i)
+                let! r2 = r.Apply(fun x -> x * x)
+                let! ret =  r.GetValue()
                 return ret
             }
             |> Async.RunSynchronously
@@ -90,9 +160,9 @@ module NanoTests =
             let mutable s = 0
             sw.Start()
             for i = 1 to numIters do
-                let! r = cn.AsyncNewRemote(fun _ -> 2)
-                let! r2 = r.AsyncApply(fun x -> x * x)
-                let! x =  r.AsyncGetValue()
+                let! r = cn.NewRemote(fun _ -> 2)
+                let! r2 = r.Apply(fun x -> x * x)
+                let! x =  r.GetValue()
                 s <- s + x
             sw.Stop()
             return s
@@ -170,14 +240,42 @@ module NanoTests =
 //        Assert.AreEqual(bigMatrix.[bigMatrix.Length-1], result)
 
     [<Test>]
-    let NanoRunRemote() = 
+    let NanoApply() = 
         use __ = new ServerNode(1500)
         use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
         let value = 
             async {
-                let! r = cn.AsyncNewRemote(fun _ -> "Test")
-                let! r2 = r.AsyncApply(fun str -> str.Length)
-                return! r2.AsyncGetValue()
+                let! r = cn.NewRemote(fun _ -> "Test")
+                let! r2 = r.Apply(fun str -> str.Length)
+                return! r2.GetValue()
+            }
+            |> Async.RunSynchronously
+        Assert.AreEqual(value, 4)
+
+    [<Test>]
+    let NanoApplySerialized() = 
+        use __ = new ServerNode(1500)
+        use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
+        let value = 
+            async {
+                let! r = cn.NewRemote(fun _ -> "Test")
+                let serFunc = Serializer.Serialize(Func<_,_>(fun (str: string) -> str.Length))
+                let! r2 = r.Apply(serFunc)
+                return! r2.GetValue()
+            }
+            |> Async.RunSynchronously
+        Assert.AreEqual(value, 4)
+
+    [<Test>]
+    let NanoApplyAsync() = 
+        use __ = new ServerNode(1500)
+        use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
+        let value = 
+            async {
+                let! r = cn.NewRemote(fun _ -> "Test")
+                let! r2 = r.ApplyAsync(fun str -> async { return str.Length })
+                let! value = r2.GetValue()
+                return 4 
             }
             |> Async.RunSynchronously
         Assert.AreEqual(value, 4)
@@ -188,8 +286,8 @@ module NanoTests =
         use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
         let value = 
             async {
-                let! r = cn.AsyncNewRemote(fun _ -> "Test")
-                return! r.AsyncApplyAndGetValue(fun str -> str.Length)
+                let! r = cn.NewRemote(fun _ -> "Test")
+                return! r.ApplyAndGetValue(fun str -> str.Length)
             }
             |> Async.RunSynchronously
         Assert.AreEqual(value, 4)
@@ -216,8 +314,8 @@ module NanoTests =
             let cn = cns.[clientNum]
             Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Chose client %d for number %d" clientNum i)
             async {
-                let! r1 = cn.AsyncNewRemote(fun _ -> i)
-                let! r2 = r1.AsyncApply(fun x ->
+                let! r1 = cn.NewRemote(fun _ -> i)
+                let! r2 = r1.Apply(fun x ->
                     if maxWait > 0 then
                         let rnd = new Random(i)
                         let wait = rnd.Next(maxWait) |> int64
@@ -227,7 +325,7 @@ module NanoTests =
                             if sw.ElapsedMilliseconds > wait then 
                                 breakNow <- true
                     sqr x)
-                return! r2.AsyncGetValue()
+                return! r2.GetValue()
             }|]
 
     let nanoParallelWild (numAsyncs: int) (maxWait: int) (numClients: int) (numServers: int) = 
@@ -295,10 +393,10 @@ module NanoTests =
         use cn2 = new ClientNode(ServerNode.GetDefaultIP(), 1500)
         let sw = Stopwatch.StartNew()
         async {
-            let! r1 = cn1.AsyncNewRemote(fun _ -> 2)
-            let! r2 = cn2.AsyncNewRemote(fun _ -> 3)
-            let! r1Squared = r1.AsyncApply(fun x -> x * x)
-            let! r2Squared = r2.AsyncApply(fun x -> x * x)
+            let! r1 = cn1.NewRemote(fun _ -> 2)
+            let! r2 = cn2.NewRemote(fun _ -> 3)
+            let! r1Squared = r1.Apply(fun x -> x * x)
+            let! r2Squared = r2.Apply(fun x -> x * x)
             return ()
         }
         |> Async.RunSynchronously
@@ -310,9 +408,9 @@ module NanoTests =
         use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
         let value = 
             async {
-                let! r = cn.AsyncNewRemote(fun _ -> "Test")
-                let! r2 = cn.AsyncNewRemote(fun _ -> r.AsyncGetValue() |> Async.RunSynchronously |> fun str -> str.Length)
-                return! r2.AsyncGetValue()
+                let! r = cn.NewRemote(fun _ -> "Test")
+                let! r2 = cn.NewRemote(fun _ -> r.GetValue() |> Async.RunSynchronously |> fun str -> str.Length)
+                return! r2.GetValue()
             }
             |> Async.RunSynchronously
         Assert.AreEqual(value, 4)
@@ -342,21 +440,20 @@ module NanoTests =
 //        printfn "%s" <| sprintf "Bringing back took: %A" sw.Elapsed
 //        printfn "%s" "Done"
 
-    let broadcast (numClients: int) (obj: 'T) : ServerNode * ClientNode[] * Distributed<'T> =
+    let broadcast (numClients: int) (bcFunc: Broadcaster -> 'T -> Async<Distributed<'T>>) (obj: 'T) : ServerNode * ClientNode[] * Distributed<'T> =
         let server = new ServerNode(1500)
         let clients = Array.init numClients (fun _ -> new ClientNode(ServerNode.GetDefaultIP(), 1500))
         let broadcaster = new Broadcaster(clients)
-        server, clients, (broadcaster.BroadcastChained(fun _ -> obj) |> Async.RunSynchronously)
+        server, clients, (bcFunc broadcaster obj |> Async.RunSynchronously)
     
     let printTime (message: string) (sw: Stopwatch) =
         let elapsed = sw.Elapsed
         printfn "%s" <| sprintf "%s: %A" message sw.Elapsed
         sw.Restart()
 
-    let nanoBroadcastArray (numInts: int) =
+    let nanoBroadcastArray (numClients: int) (numInts: int) (bcFunc: Broadcaster -> int[] -> Async<Distributed<int[]>>)  =
         let sw = Stopwatch.StartNew()
-        let numClients = 10
-        let server, clients, dist = broadcast numClients [|1..numInts|]
+        let server, clients, dist = [|1..numInts|] |> broadcast numClients bcFunc 
         printTime "Broadcasting took:" sw
         try
             let vals =
@@ -375,22 +472,37 @@ module NanoTests =
             disposeAll clients
     
     [<Test>]
+    let NanoBroadcastTreeTiny() =
+        nanoBroadcastArray 10 10 (fun bc arr -> bc.BroadcastTree((fun _ -> arr), 2))
+
+    [<Test>]
+    let NanoBroadcastTreeSmall() =
+        nanoBroadcastArray 10 10000 (fun bc arr -> bc.BroadcastTree((fun _ -> arr), 2))
+
+    [<Test>]
+    let NanoBroadcastTreeMedium() =
+        nanoBroadcastArray 10 1000000 (fun bc arr -> bc.BroadcastTree((fun _ -> arr), 2))
+
+    [<Test>]
     let NanoBroadcastTiny() =
-        nanoBroadcastArray 10
+        nanoBroadcastArray 10 10 (fun bc arr -> bc.BroadcastChained(fun _ -> arr))
 
     [<Test>]
     let NanoBroadcastSmall() =
-        nanoBroadcastArray 10000
+        nanoBroadcastArray 10 10000 (fun bc arr -> bc.BroadcastChained(fun _ -> arr))
 
     [<Test>]
     let NanoBroadcastMedium() =
-        nanoBroadcastArray 1000000
+        nanoBroadcastArray 10 1000000 (fun bc arr -> bc.BroadcastChained(fun _ -> arr))
 
 //// Commenting out for test run speed
 //    [<Test>]
 //    let NanoBroadcastLarge() =
 //        do BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
-//        nanoBroadcastArray 10000000
+//        nanoBroadcastArray 10 10000000 (fun bc arr -> bc.BroadcastChained(fun _ -> arr))
+//    [<Test>]
+//    let NanoBroadcastTreeLarge() =
+//        nanoBroadcastArray 10 10000000 (fun bc arr -> bc.BroadcastTree((fun _ -> arr), 2))
 
     let resetTiming, time =
         let sw = Stopwatch()
@@ -402,15 +514,15 @@ module NanoTests =
 //        do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "med"|])
         use server = new ServerNode(1500)
         use client = new ClientNode( ServerNode.GetDefaultIP(), 1500 )
-        let r = client.AsyncNewRemote(fun _ -> 1) |> Async.RunSynchronously
+        let r = client.NewRemote(fun _ -> 1) |> Async.RunSynchronously
         time "Connected and created"
 
-        do r.AsyncGetValue() |> Async.RunSynchronously |> ignore
+        do r.GetValue() |> Async.RunSynchronously |> ignore
         time "First get"
 
         let numTrips = 1000
         resetTiming()
-        let vals = Array.init numTrips (fun _ -> r.AsyncGetValue() |> Async.RunSynchronously)
+        let vals = Array.init numTrips (fun _ -> r.GetValue() |> Async.RunSynchronously)
         time (sprintf "%d round trips" numTrips)
         Assert.AreEqual(vals, Array.init numTrips (fun _ -> 1))
 
@@ -420,10 +532,10 @@ module NanoTests =
 //        do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "med"|])
         use server = new ServerNode(1500)
         use client = new ClientNode( ServerNode.GetDefaultIP(), 1500 )
-        let r = client.AsyncNewRemote(fun _ -> 1) |> Async.RunSynchronously
+        let r = client.NewRemote(fun _ -> 1) |> Async.RunSynchronously
         time "Connected and created"
 
-        do r.AsyncGetValue() |> Async.RunSynchronously |> ignore
+        do r.GetValue() |> Async.RunSynchronously |> ignore
         time "First get"
 
         let numTrips = 1000
@@ -433,7 +545,7 @@ module NanoTests =
             Array.init numAsyncs (fun i -> 
                 async { 
                     for j in i..numAsyncs..numTrips do 
-                        do! r.AsyncGetValue() |> Async.Ignore  
+                        do! r.GetValue() |> Async.Ignore  
                 })
             |> Async.Parallel
             |> Async.RunSynchronously
@@ -445,8 +557,8 @@ module NanoTests =
         use cn = new ClientNode(ServerNode.GetDefaultIP(), 1500)
         let value = 
             async {
-                let! r = cn.AsyncNewRemote(fun _ -> "Test")
-                let! x = r.AsyncApplyAndAsyncGetValue(fun str -> async { return str.Length } )
+                let! r = cn.NewRemote(fun _ -> "Test")
+                let! x = r.ApplyAsyncAndGetValue(fun str -> async { return str.Length } )
                 return x
             }
             |> Async.RunSynchronously

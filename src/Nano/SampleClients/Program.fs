@@ -2,6 +2,7 @@
 // See the 'F# Tutorial' project for more help.
 
 open System
+open System.Diagnostics
 open System.Threading
 open System.Net
 open System.Net.Sockets
@@ -13,13 +14,13 @@ open Prajna.Tools
 
 let hello() =
     use client = new ClientNode(ServerNode.GetDefaultIP(), 1500)
-    client.AsyncNewRemote(fun _ -> printfn "Hello") |> Async.RunSynchronously |> ignore
+    client.NewRemote(fun _ -> printfn "Hello") |> Async.RunSynchronously |> ignore
 
 let helloParallel() =
     let clients = [1500..1503] |> List.map (fun p -> new ClientNode(ServerNode.GetDefaultIP(), p)) |> List.toArray
     try
         clients 
-        |> Array.mapi (fun i c -> c.AsyncNewRemote(fun _ -> printfn "Hello at Machine----: %d!" i; i))
+        |> Array.mapi (fun i c -> c.NewRemote(fun _ -> printfn "Hello at Machine----: %d!" i; i))
         |> Async.Parallel
         |> Async.RunSynchronously
         |> ignore
@@ -60,13 +61,13 @@ let resetTiming, time =
     (fun () -> sw.Restart()), (fun (msg: string) -> printfn "%s: %A" msg sw.Elapsed; sw.Restart())
 
 
-let broadcastCluster() =
-    do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
-    
-    Prajna.Tools.BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
+let broadcastCluster (argv: string[]) (bcFunc: Broadcaster -> 'T -> Async<Distributed<'T>>) =
+
+    let numBytes = Int64.Parse argv.[0]
+    let numMachines = Int32.Parse argv.[1]
 
     resetTiming()
-    let ips = getOneNetClusterIPs [21..35]
+    let ips = getOneNetClusterIPs [21..(21 + numMachines - 1)]
     time "Getting IPs"
 
     let clients = 
@@ -81,17 +82,21 @@ let broadcastCluster() =
     time "Starting broadcaster"
 
     let d = 
-        broadcaster.BroadcastChained(fun _ ->
+//        bcFunc broadcaster ("foo" :> obj)
+        broadcaster.BroadcastParallel(fun _ ->
             let m = Environment.MachineName
             printfn "Hello from %s!" m
             m)
         |> Async.RunSynchronously
-    printfn "Machine names: %A" (d.Remotes |> Array.map (fun r -> r.AsyncGetValue()) |> Async.Parallel |> Async.RunSynchronously )
+    printfn "Machine names: %A" (d.Remotes |> Array.map (fun r -> r.GetValue()) |> Async.Parallel |> Async.RunSynchronously )
     time "Broadcasting machine name fetch"
 
     resetTiming()
-    let longs = Array.init 4 (fun _ -> 
-                    Array.init 125000000 (fun i -> i)
+    let numLongs = numBytes / 8L
+    let numLongsPerArray = numLongs / 10L
+
+    let longs = Array.init 10 (fun _ -> 
+                    Array.init (int numLongsPerArray) (fun i -> i)
                 ) 
     time "Initializing arrays"
 
@@ -100,8 +105,18 @@ let broadcastCluster() =
                 (float(arr.Length * 8) / 1000000.0 
               )] |> List.sum
     printfn "Broadcasting %2.2fMB" mbs
-    let arrs = broadcaster.BroadcastChained(fun _ -> printfn "Received longs"; longs) |> Async.RunSynchronously
+    let arrs = bcFunc broadcaster longs |> Async.RunSynchronously
     time (sprintf "Broadcast %2.2fMB" mbs)
+
+let broadcastClusterChained (argv: string[]) =
+    broadcastCluster argv (fun broadcaster longs -> broadcaster.BroadcastChained(fun _ -> printfn "Received longs chained"; longs)) 
+
+let broadcastClusterTree (argv: string[]) =
+    let treeDegree = Int32.Parse argv.[2]
+    broadcastCluster argv (fun broadcaster longs -> broadcaster.BroadcastTree((fun _ -> printfn "Received longs tree"; longs), treeDegree)) 
+
+let broadcastClusterParallel (argv: string[]) =
+    broadcastCluster argv (fun broadcaster longs -> broadcaster.BroadcastParallel(fun _ -> printfn "Received longs parallel"; longs)) 
 
 let latency (argv: string[]) =
 
@@ -111,17 +126,17 @@ let latency (argv: string[]) =
     printfn "Starting"
     let client = new ClientNode( getOneNetClusterIPs [21] |> Seq.nth 0, 1500 )
     let r = 
-        client.AsyncNewRemote(fun _ -> Array.init numBytes (fun i -> byte (i % 256))) 
+        client.NewRemote(fun _ -> Array.init numBytes (fun i -> byte (i % 256))) 
         |> Async.RunSynchronously
     time "Connected and created"
 
-    do r.AsyncGetValue() |> Async.RunSynchronously |> ignore
+    do r.GetValue() |> Async.RunSynchronously |> ignore
     time "First get"
 
     resetTiming()
 
     let sw = Stopwatch.StartNew()
-    let vals = Array.init numTrips (fun _ -> r.AsyncGetValue() |> Async.RunSynchronously)
+    let vals = Array.init numTrips (fun _ -> r.GetValue() |> Async.RunSynchronously)
     let elapsed = sw.Elapsed
     printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
 
@@ -134,11 +149,11 @@ let latencyParallel (argv: string[]) =
     printfn "Starting"
     let client = new ClientNode( getOneNetClusterIPs [21] |> Seq.nth 0, 1500 )
     let r = 
-        client.AsyncNewRemote(fun _ -> let rnd = new Random() in Array.init numBytes (fun _ -> rnd.Next(256) |> byte)) 
+        client.NewRemote(fun _ -> let rnd = new Random() in Array.init numBytes (fun _ -> rnd.Next(256) |> byte)) 
         |> Async.RunSynchronously
     time "Connected and created"
 
-    do r.AsyncGetValue() |> Async.RunSynchronously |> ignore
+    do r.GetValue() |> Async.RunSynchronously |> ignore
     time "First get"
 
     resetTiming()
@@ -147,7 +162,39 @@ let latencyParallel (argv: string[]) =
         Array.init numAsyncs (fun i -> 
             async { 
                 for j in i..numAsyncs..numTrips do 
-                    do! r.AsyncGetValue() |> Async.Ignore  
+                    do! r.GetValue() |> Async.Ignore  
+            })
+        |> Async.Parallel
+        |> Async.RunSynchronously
+//        Array.init numTrips (fun _ -> r.AsyncGetValue() |> Async.RunSynchronously)
+    let elapsed = sw.Elapsed
+    printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
+
+let latencyParallelPush (argv: string[]) =
+
+    let numTrips = Int32.Parse(argv.[0])
+    let numBytes = Int32.Parse(argv.[1])
+    let numAsyncs = Int32.Parse(argv.[2])
+
+    let testArray = Array.init numBytes (fun i -> i % 256 |> byte)
+    let serTestArray = Serializer.Serialize(Func<_>(fun _ -> testArray))
+    
+    printfn "Starting"
+    let client = new ClientNode( getOneNetClusterIPs [21] |> Seq.nth 0, 1500 )
+    let r = client.NewRemote(fun _ -> testArray) |> Async.RunSynchronously
+    time "Connected and created"
+
+    do r.GetValue() |> Async.RunSynchronously |> ignore
+    time "First get"
+
+    resetTiming()
+    let sw = Stopwatch.StartNew()
+    let vals = 
+        Array.init numAsyncs (fun i -> 
+            async { 
+                for j in i..numAsyncs..numTrips do 
+//                    do! client.NewRemote(fun _ -> testArray) |> Async.Ignore
+                    do! client.NewRemote(serTestArray) |> Async.Ignore
             })
         |> Async.Parallel
         |> Async.RunSynchronously
@@ -288,12 +335,39 @@ let rawLatencyUdp (args: string[]) =
     let elapsed = sw.Elapsed
     printf "%d round trips: %A. (avg. round trip time: %Ams)" numTrips elapsed (elapsed.TotalMilliseconds / float numTrips)
 
+open System.Threading
+
 [<EntryPoint>]
 let main argv = 
-//    BufferListStream<byte>.BufferSizeDefault <- 1 <<< 16
-    // do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
+    BufferListStream<byte>.BufferSizeDefault <- 1 <<< 20
+    do Prajna.Tools.Logger.ParseArgs([|"-verbose"; "info"; "-con"|])
     BufferListStream<byte>.InitSharedPool()
-    rawLatencyWithSer argv
-    //latency argv
-    // broadcastCluster()
+    // rawLatencyWithSer argv
+    // latencyParallel argv
+    // broadcastCluster argv
+    // latency argv
+    latencyParallelPush argv
+    // broadcastClusterTree argv
+    // broadcastClusterParallel argv
+
+//    let mutable x = 0
+//    let inc() = async { 
+//        x <- x + 1
+//        return () 
+//    }
+//    let sw = new Stopwatch()
+//
+//    let n = 1000
+//
+//    let incs = Array.init n (fun _ -> inc())
+//    sw.Restart()
+//    do
+//        for f in incs do
+//            f |> Async.StartImmediate
+////        } |> Async.StartImmediate
+//    sw.Stop()
+//    printfn "Ellapsed: %f (avg: %f)" sw.Elapsed.TotalMilliseconds (sw.Elapsed.TotalMilliseconds / float n)
+//
+//    printfn "%d" x
+
     0 // return an integer exit code

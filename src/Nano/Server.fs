@@ -24,7 +24,8 @@ type ServerBufferHandler(readQueue: BufferQueue, writeQueue: BufferQueue, handle
     
     let onNewBuffer (requestBytes: MemoryStreamB) =
         async {
-            let (Numbered(number,request)) : Numbered<Request> = downcast Serializer.Deserialize(requestBytes) 
+            let numberedRequest : Numbered<Request> = downcast Serializer.Deserialize(requestBytes)
+            let (Numbered(number,request)) : Numbered<Request> = numberedRequest
             Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Deserialized request: %d bytes." requestBytes.Length)
             requestBytes.Dispose()
             let! response = handler.AsyncHandleRequest request
@@ -61,35 +62,66 @@ type ServerNode(port: int) as self =
         Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Ran method")
         ret
 
+    let addObjectAndGetResponse (x: obj) (objType: Type) : Response = 
+        let retPos = lock objects (fun _ -> objects.Add x; objects.Count - 1)
+        if objType <> typeof<Void> then
+            let retPos = lock objects (fun _ -> objects.Add x; objects.Count - 1)
+            RunDelegateResponse(Choice1Of2(retPos))
+        else
+            RunDelegateResponse(Choice1Of2(-1))
+
     let concurrentMemo (f: 'a -> 'b) =
         let cache = ConcurrentDictionary<'a, 'b>()
         fun x -> cache.GetOrAdd(x, f)
 
     let handleDelegateFunc (pos: int) (func: Delegate) : Response =
-        let ret = applyDelegate pos func
-        if func.Method.ReturnType <> typeof<Void> then
-            let retPos = lock objects (fun _ -> objects.Add ret; objects.Count - 1)
-            RunDelegateResponse(retPos)
-        else
-            RunDelegateResponse(-1)
+        try
+            let ret = applyDelegate pos func
+            addObjectAndGetResponse ret func.Method.ReturnType
+        with
+            | e -> RunDelegateResponse(Choice2Of2(e.InnerException))
 
-    let dynamicReturnResponse =
+    let dynamicReturnValue =
         concurrentMemo (fun (tType: Type) ->
-            typeof<ServerNode>.GetMethod("GetReturnResponse").MakeGenericMethod(tType).Invoke(null, null) :?> Delegate)
+            typeof<ServerNode>.GetMethod("GetValueResponse").MakeGenericMethod(tType).Invoke(null, null) :?> Delegate)
+
+    let dynamicReturnRemote =
+        concurrentMemo (fun (tType: Type) ->
+            typeof<ServerNode>.GetMethod("GetRemoteResponse").MakeGenericMethod(tType).Invoke(self, null) :?> Delegate)
+
+    let handleAsyncCall (remotePos: int) (userFunc: Delegate) (asyncResponseDelegate: Type -> Delegate) =
+        async {
+            let asyncUOrException = 
+                try
+                    Choice1Of2(applyDelegate remotePos userFunc)
+                with
+                    | e -> Choice2Of2(e)
+            match asyncUOrException with
+            | Choice1Of2(asyncU) ->
+                try
+                    let uType = userFunc.Method.ReturnType.GetGenericArguments().[0] 
+                    let dynamicReturnResponse = asyncResponseDelegate uType
+                    let asyncResponse = dynamicReturnResponse.DynamicInvoke(asyncU)
+                    return! (asyncResponse :?> Async<Response>)
+                with 
+                    | e -> return RunDelegateResponse(Choice2Of2(e))
+            | Choice2Of2(e) -> return RunDelegateResponse(Choice2Of2(e.InnerException))
+        }
 
     let handleRequest(request: Request) : Async<Response> =
         match request with
         | RunDelegate(pos,func) ->
             async.Return(handleDelegateFunc pos func)
         | RunDelegateAndGetValue(pos,func) ->
-            let ret = applyDelegate pos func
-            async.Return(GetValueResponse(ret))
-        | RunDelegateAndAsyncGetValue(pos,func) ->
-            let asyncU = applyDelegate pos func
-            let uType = asyncU.GetType().GetGenericArguments().[0]
-            let myDynamicReturnResponse = dynamicReturnResponse uType
-            let ret = myDynamicReturnResponse.DynamicInvoke(asyncU)
-            ret :?> Async<Response>
+            try
+                let ret = applyDelegate pos func
+                async.Return(GetValueResponse(ret))
+            with
+                | e -> async.Return(RunDelegateResponse(Choice2Of2(e.InnerException)))
+        | RunDelegateAsync(pos,func) ->
+            handleAsyncCall pos func dynamicReturnRemote
+        | RunDelegateAsyncAndGetValue(pos,func) ->
+            handleAsyncCall pos func dynamicReturnValue
         | RunDelegateSerialized(pos, bytes) ->
             let func = Serializer.Deserialize(bytes) :?> Delegate
             bytes.Dispose()
@@ -115,17 +147,31 @@ type ServerNode(port: int) as self =
         network.Listen<BufferStreamConnection>(port, (*address.ToString(),*) onConnect)
 
 
-    static member GetReturnResponse<'T>() = 
+    member this.GetRemoteResponse<'T>() = 
+        Func<Async<'T>, Async<Response>>(fun (at: Async<'T>) -> 
+            async {
+                let! t = at
+                return addObjectAndGetResponse t (typeof<'T>)
+            })
+
+    static member GetValueResponse<'T>() = 
         Func<Async<'T>, Async<Response>>(fun (at: Async<'T>) -> 
             async {
                 let! t = at
                 return GetValueResponse(t)
             })
 
+//    static member GetReturnRemote<'T>() = 
+//        Func<Async<'T>, Async<Response>>(fun (at: Async<'T>) -> 
+//            async {
+//                let! t = at
+//                return GetValueResponse(t)
+//            })
+
 //    static member GetReturn<'T>() = Func<'T,Async<'T>>(fun x -> async.Return(x))
 
-    static member GetBind<'T,'U>() =
-        Func<Async<'T>, Func<'T, Async<'U>>, Async<'U>>(fun at f -> async.Bind(at, fun x -> f.Invoke(x)))
+//    static member GetBind<'T,'U>() =
+//        Func<Async<'T>, Func<'T, Async<'U>>, Async<'U>>(fun at f -> async.Bind(at, fun x -> f.Invoke(x)))
         
     static member GetDefaultIP() =
         let firstIP =
